@@ -29,8 +29,8 @@
 
 <div>
     <h4 align="center">
-        <a href="" target='_blank'>
-        <img src="https://img.shields.io/badge/arXiv%20paper--b31b1b.svg">
+        <a href="https://arxiv.org/abs/2410.18666" target='_blank'>
+        <img src="https://img.shields.io/badge/arXiv%20paper-2410.18666-b31b1b.svg">
         </a>
         <a href="https://huggingface.co/shallowdream204/DreamClear/tree/main" target='_blank'>
         <img src="https://img.shields.io/badge/🤗%20Weights-DreamClear-yellow">
