@@ -125,15 +125,14 @@ training_datasets_folder/
 #### II - Training for DreamClear
 Run the following command to train DreamClear with default settings:
 ```shell
-python3 -m torch.distributed.launch --nproc_per_node=8 \
---nnodes=... --node_rank=... --master_addr=... --master_port=... \
-train_dreamclear.py configs/DreamClear/DreamClear_Train.py \
---load_from /path/to/PixArt-XL-2-1024-MS.pth \
---vae_pretrained /path/to/sd-vae-ft-ema \
---swinir_pretrained /path/to/general_swinir_v1.ckpt \
---val_image /path/to/RealLQ250/lq/val_image.png \
---val_npz /path/to/RealLQ250/npz/val_image.npz  \
---work_dir experiments/train_dreamclear
+python3 -m torch.distributed.launch --nproc_per_node=8 --nnodes=... --node_rank=... --master_addr=... --master_port=... \
+    train_dreamclear.py configs/DreamClear/DreamClear_Train.py \
+    --load_from /path/to/PixArt-XL-2-1024-MS.pth \
+    --vae_pretrained /path/to/sd-vae-ft-ema \
+    --swinir_pretrained /path/to/general_swinir_v1.ckpt \
+    --val_image /path/to/RealLQ250/lq/val_image.png \
+    --val_npz /path/to/RealLQ250/npz/val_image.npz \
+    --work_dir experiments/train_dreamclear
 ```
 Please modify the path of training datasets in `configs/DreamClear/DreamClear_Train.py`. You can also modify the training hyper-parameters (e.g., `lr`, `train_batch_size`, `gradient_accumulation_steps`) in this file, according to your own GPU machines.
 ## ⚡ Inference
@@ -144,14 +143,14 @@ We provide the `RealLQ250` benchmark, which can be downloaded from [Google Drive
 Run the following command to restore LQ images from 256 to 1024:
 ```shell
 python3 -m torch.distributed.launch --nproc_per_node 1 --master_port 1234 \
-test_1024.py configs/DreamClear/DreamClear_Test.py \
---dreamclear_ckpt /path/to/DreamClear-1024.pth \
---swinir_ckpt /path/to/general_swinir_v1.ckpt \
---vae_ckpt /path/to/sd-vae-ft-ema \
---lre --cfg_scale 4.5 --color_align wavelet \
---image_path /path/to/RealLQ250/lq \
---npz_path /path/to/RealLQ250/npz \
---save_dir validation
+    test_1024.py configs/DreamClear/DreamClear_Test.py \
+    --dreamclear_ckpt /path/to/DreamClear-1024.pth \
+    --swinir_ckpt /path/to/general_swinir_v1.ckpt \
+    --vae_ckpt /path/to/sd-vae-ft-ema \
+    --lre --cfg_scale 4.5 --color_align wavelet \
+    --image_path /path/to/RealLQ250/lq \
+    --npz_path /path/to/RealLQ250/npz \
+    --save_dir validation
 ```
 #### Evaluation on high-level benchmarks
 
