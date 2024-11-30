@@ -34,9 +34,16 @@ from PIL import Image
 from torchvision.utils import save_image
 from diffusion.utils.align_color import wavelet_reconstruction, adaptive_instance_normalization
 
+from util_image import PIL2Tensor, Tensor2PIL
+
+from diffusion.model.t5 import T5Embedder
+from llava.llava_caption import LLaVACaption
+
 
 warnings.filterwarnings("ignore")  # ignore warning
 
+llava_device = 'cuda:1'
+t5llm_device = 'cuda:2'
 
 def set_fsdp_env():
     os.environ["ACCELERATE_USE_FSDP"] = 'true'
@@ -61,27 +68,24 @@ def log_validation(model, accelerator, device):
     files.sort()
     for i in range(len(files)):
         file = os.path.join(path_lq, files[i])
-        txt_info = np.load(os.path.join(args.npz_path,files[i].replace('.png','.npz')))
-        txt_fea = torch.from_numpy(txt_info['caption_feature']).to(device) #1 120 4096
-        txt_fea = txt_fea[None] 
-        attention_mask = torch.ones(1, 1, txt_fea.shape[1]) 
-        if 'attention_mask' in txt_info.keys():
-            attention_mask = torch.from_numpy(txt_info['attention_mask'])[None].to(device) # 1 1 120
-        attention_mask = attention_mask[None]
-        img_lq = Image.open(file).convert('RGB')
-        img_lq.save(os.path.join(save_dir, 'input', files[i]))
+        img_lq_in = Image.open(file).convert('RGB')
+        img_lq_in.save(os.path.join(save_dir, 'input', files[i]))
 
-        img_lq = np.array(img_lq)
-        img_lq = torch.tensor(img_lq, dtype=vae_dtype, device=device) / 255.0
-        img_lq = img_lq.permute(2, 0, 1).unsqueeze(0).contiguous()
-        img_lq  = F.interpolate(
-                        img_lq,
-                        size=(args.sr_size,args.sr_size),
-                        mode='bicubic',
-                        )
+        img_lq, h0, w0 = PIL2Tensor(img_lq_in, upscale=args.upscale, min_size=1024)
+        img_lq = img_lq.unsqueeze(0).to(device)[:, :3, :, :]
+
         img_pre = swinir(img_lq)
 
         img_pre = torch.clamp(img_pre, 0, 1.0)
+
+        img_pre_pil = Tensor2PIL(img_pre[0],img_pre.shape[2],img_pre.shape[3])
+        caption = llava_model.get_caption([img_pre_pil])
+        print(caption)
+
+        caption = [caption]
+        caption_emb, emb_mask = t5.get_text_embeddings(caption)
+        txt_fea = caption_emb[None].to(device)
+        attention_mask = emb_mask[None].to(device)
 
         posterior_lq = vae.encode(2*img_lq-1.0)
         latent_lq = posterior_lq.latent_dist.mode()*config.scale_factor
@@ -91,43 +95,35 @@ def log_validation(model, accelerator, device):
         latent_pre.to(dtype=weight_dtype)
         model_kwargs = dict(data_info={'img_hw': hw, 'aspect_ratio': ar}, mask=attention_mask,c_lq=latent_lq,c_pre=latent_pre)
 
-        if args.sampling_alg == 'dpm':
-            z = torch.randn(1, 4, args.sr_size//8, args.sr_size//8, device=device,dtype=weight_dtype)
-            null_y = model.y_embedder.y_embedding[None].repeat(1, 1, 1)[:, None].to(device)
-            dpm_solver = DPMS(  model.forward_with_dpmsolver,
-                                condition=txt_fea,
-                                uncondition=null_y,
-                                cfg_scale=args.cfg_scale,
-                                model_kwargs=model_kwargs)
-            with torch.cuda.amp.autocast():
-                samples = dpm_solver.sample(
-                    z,
-                    steps=50,
-                    order=2,
-                    skip_type="time_uniform",
-                    method="multistep",
-                    )
-        elif args.sampling_alg == 'iddpm':
-            if args.lre:
-                t_diffusion = IDDPM(str(1000))
-                noise=torch.randn_like(latent_pre, device=device,dtype=weight_dtype)
-                timesteps = torch.randint(args.start_point, args.start_point+1, (1,), device=latent_pre.device).long()
-                z = t_diffusion.q_sample(latent_pre,timesteps,noise=noise).repeat(2, 1, 1, 1)
-            else:
-                z = torch.randn(1, 4, args.sr_size//8, args.sr_size//8, device=device,dtype=weight_dtype).repeat(2, 1, 1, 1)
-            null_y = model.y_embedder.y_embedding[None].repeat(1, 1, 1)[:, None].to(device)
+        if args.lre:
+            t_diffusion = IDDPM(str(1000))
+            noise=torch.randn_like(latent_pre, device=device,dtype=weight_dtype)
+            timesteps = torch.randint(args.start_point, args.start_point+1, (1,), device=latent_pre.device).long()
+            z = t_diffusion.q_sample(latent_pre,timesteps,noise=noise).repeat(2, 1, 1, 1)
+        else:
+            z = torch.randn(1, 4, latent_lq.shape[2], latent_lq.shape[3], device=device,dtype=weight_dtype).repeat(2, 1, 1, 1)
+        null_y = model.y_embedder.y_embedding[None].repeat(1, 1, 1)[:, None].to(device)
 
+        diffusion = IDDPM(str(50))
+
+        if z.shape[2:] == (1024//8,1024//8):
             model_kwargs = dict(y=torch.cat([txt_fea, null_y]), cfg_scale=args.cfg_scale,
-                                data_info={'img_hw': hw, 'aspect_ratio': ar},
-                                mask=attention_mask, c_lq=latent_lq,c_pre=latent_pre)
-
-            diffusion = IDDPM(str(50))
-            with torch.cuda.amp.autocast():
-                samples = diffusion.p_sample_loop(
-                model.forward_with_cfg, z.shape, z, clip_denoised=False, model_kwargs=model_kwargs, progress=True,
-                device=device, accelerator=accelerator
-            )
-            samples, _ = samples.chunk(2, dim=0)  # Remove null class samples
+                        data_info={'img_hw': hw, 'aspect_ratio': ar},
+                        mask=attention_mask, c_lq=latent_lq,c_pre=latent_pre)            
+            samples = diffusion.p_sample_loop(
+            model.forward_with_cfg, z.shape, z, clip_denoised=False, model_kwargs=model_kwargs, progress=True,
+            device=device, accelerator=accelerator
+        )
+        else:
+            model_kwargs = dict(y=torch.cat([txt_fea, null_y]), cfg_scale=args.cfg_scale,
+                        data_info={'img_hw': hw, 'aspect_ratio': ar},
+                        mask=attention_mask, c_lq=latent_lq,c_pre=latent_pre,latent_tiled_size=args.latent_tiled_size,latent_tiled_overlap=args.latent_tiled_overlap) 
+            samples = diffusion.p_sample_loop(
+            model.forward_with_cfg_tile, z.shape, z, clip_denoised=False, model_kwargs=model_kwargs, progress=True,
+            device=device, accelerator=accelerator
+        )
+                
+        samples, _ = samples.chunk(2, dim=0)  # Remove null class samples
         
         samples = vae.decode(samples.to(dtype=vae_dtype) / config.scale_factor).sample
         torch.cuda.empty_cache()
@@ -136,8 +132,8 @@ def log_validation(model, accelerator, device):
             hq = wavelet_reconstruction(hq,img_pre)
         elif args.color_align == 'adain':
             hq = adaptive_instance_normalization(hq,img_pre)
-        hq = hq.clamp(0, 1.0)
-        save_image(hq[0], os.path.join(save_dir,'output', files[i]), nrow=1, normalize=True, value_range=(0, 1))
+        hq = hq.clamp(0, 1.0)[0]
+        Tensor2PIL(hq, h0, w0).save(os.path.join(save_dir,'output', files[i]))
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Process some integers.")
@@ -171,19 +167,21 @@ def parse_args():
     parser.add_argument('--resume_optimizer', action='store_true')
     parser.add_argument('--resume_lr_scheduler', action='store_true')
 
-    # Related to Inference
+    # Inference arguments
     parser.add_argument('--dreamclear_ckpt', type=str, default=None)
     parser.add_argument('--swinir_ckpt', type=str, default=None)
     parser.add_argument('--vae_ckpt', type=str, default=None)
-    parser.add_argument("--mixed_precision", type=str, default='bf16')
+    parser.add_argument('--t5_ckpt', type=str, default=None)
+    parser.add_argument('--llava_ckpt', type=str, default=None)
+    parser.add_argument("--mixed_precision", type=str, default='fp16')
     parser.add_argument('--lre', action='store_true')
     parser.add_argument('--start_point', type=int, default=999)
-    parser.add_argument('--sr_size', type=int, default=1024)
+    parser.add_argument('--upscale', type=int, default=4)
+    parser.add_argument('--latent_tiled_size', type=int, default=128)
+    parser.add_argument('--latent_tiled_overlap', type=int, default=32)
     parser.add_argument('--cfg_scale', type=float, default=4.5)
     parser.add_argument("--color_align", type=str, choices=['wavelet', 'adain'], default='wavelet')
-    parser.add_argument("--sampling_alg", type=str, choices=['iddpm', 'dpm'], default='iddpm')
     parser.add_argument('--image_path', type=str, default=None)
-    parser.add_argument('--npz_path', type=str, default=None)
     parser.add_argument('--save_dir', type=str, default='validation')
     parser.add_argument('--seed', type=int, default=None)
 
@@ -338,4 +336,6 @@ if __name__ == '__main__':
         logger.warning(f'Unexpected keys: {unexpected}')
 
     model = accelerator.prepare(model,)
+    t5 = T5Embedder(device=t5llm_device,dir_or_name='', local_cache=True, cache_dir=args.t5_ckpt, model_max_length=120)
+    llava_model = LLaVACaption(args.llava_ckpt,"Describe this image and its style.",None,llava_device)
     log_validation(model,accelerator,model.device)

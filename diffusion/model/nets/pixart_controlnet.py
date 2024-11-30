@@ -626,6 +626,129 @@ class ControlPixArtMSHalfSR2Branch(Module):
         half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
         eps = torch.cat([half_eps, half_eps], dim=0)
         return torch.cat([eps, rest], dim=1)
+
+    def _gaussian_weights(self, tile_width, tile_height, nbatches, device):
+        """Generates a gaussian mask of weights for tile contributions"""
+        from numpy import pi, exp, sqrt
+        import numpy as np
+
+        latent_width = tile_width
+        latent_height = tile_height
+
+        var = 0.01
+        midpoint = (latent_width - 1) / 2  # -1 because index goes from 0 to latent_width - 1
+        x_probs = [exp(-(x-midpoint)*(x-midpoint)/(latent_width*latent_width)/(2*var)) / sqrt(2*pi*var) for x in range(latent_width)]
+        midpoint = latent_height / 2
+        y_probs = [exp(-(y-midpoint)*(y-midpoint)/(latent_height*latent_height)/(2*var)) / sqrt(2*pi*var) for y in range(latent_height)]
+
+        weights = np.outer(y_probs, x_probs)
+        return torch.tile(torch.tensor(weights, device=device), (nbatches, self.out_channels, 1, 1))
+
+    def forward_with_cfg_tile(self, x, timestep, y, cfg_scale, data_info, c_lq,c_pre, latent_tiled_size, latent_tiled_overlap, **kwargs):
+        batch_size = 1
+        b, c, h, w = x.size()
+        tile_size, tile_overlap = (latent_tiled_size, latent_tiled_overlap)
+        assert h*w>tile_size*tile_size
+
+
+        half = x[: len(x) // 2]
+        combined = torch.cat([half, half], dim=0)
+
+        latent_model_input  = combined
+
+        tile_weights = self._gaussian_weights(tile_size, tile_size, 1, latent_model_input.device)
+        tile_size = min(tile_size, min(h, w))
+        tile_weights = self._gaussian_weights(tile_size, tile_size, 1, latent_model_input.device)
+
+        grid_rows = 0
+        cur_x = 0
+        while cur_x < latent_model_input.size(-1):
+            cur_x = max(grid_rows * tile_size-tile_overlap * grid_rows, 0)+tile_size
+            grid_rows += 1
+
+        grid_cols = 0
+        cur_y = 0
+        while cur_y < latent_model_input.size(-2):
+            cur_y = max(grid_cols * tile_size-tile_overlap * grid_cols, 0)+tile_size
+            grid_cols += 1
+
+        input_list = []
+        cond_list_lq = []
+        cond_list_pre = []
+        noise_preds = []
+
+        for row in range(grid_rows):
+            noise_preds_row = []
+            for col in range(grid_cols):
+                if col < grid_cols-1 or row < grid_rows-1:
+                    # extract tile from input image
+                    ofs_x = max(row * tile_size-tile_overlap * row, 0)
+                    ofs_y = max(col * tile_size-tile_overlap * col, 0)
+                    # input tile area on total image
+                if row == grid_rows-1:
+                    ofs_x = w - tile_size
+                if col == grid_cols-1:
+                    ofs_y = h - tile_size
+
+                input_start_x = ofs_x
+                input_end_x = ofs_x + tile_size
+                input_start_y = ofs_y
+                input_end_y = ofs_y + tile_size
+
+                # input tile dimensions
+                input_tile = latent_model_input[:, :, input_start_y:input_end_y, input_start_x:input_end_x]
+                input_list.append(input_tile)
+                cond_tile_lq = c_lq[:, :, input_start_y:input_end_y, input_start_x:input_end_x]
+                cond_list_lq.append(cond_tile_lq)
+                cond_tile_pre = c_pre[:, :, input_start_y:input_end_y, input_start_x:input_end_x]
+                cond_list_pre.append(cond_tile_pre)
+
+                if len(input_list) == batch_size or col == grid_cols-1:
+                    input_list_t = torch.cat(input_list, dim=0)
+                    cond_list_lq_t = torch.cat(cond_list_lq, dim=0)
+                    cond_list_pre_t = torch.cat(cond_list_pre, dim=0)
+
+                    model_out = self.forward(input_list_t, timestep, y, data_info=data_info, c_lq=cond_list_lq_t, c_pre=cond_list_pre_t, **kwargs)
+
+                    input_list = []
+                    cond_list_lq = []
+                    cond_list_pre = []
+
+                noise_preds.append(model_out)
+
+         # Stitch noise predictions for all tiles
+        noise_pred = torch.zeros((b,self.out_channels,h,w), device=latent_model_input.device)
+        contributors = torch.zeros((b,self.out_channels,h,w), device=latent_model_input.device)
+        # Add each tile contribution to overall latents
+        for row in range(grid_rows):
+            for col in range(grid_cols):
+                if col < grid_cols-1 or row < grid_rows-1:
+                    # extract tile from input image
+                    ofs_x = max(row * tile_size-tile_overlap * row, 0)
+                    ofs_y = max(col * tile_size-tile_overlap * col, 0)
+                    # input tile area on total image
+                if row == grid_rows-1:
+                    ofs_x = w - tile_size
+                if col == grid_cols-1:
+                    ofs_y = h - tile_size
+
+                input_start_x = ofs_x
+                input_end_x = ofs_x + tile_size
+                input_start_y = ofs_y
+                input_end_y = ofs_y + tile_size
+
+                noise_pred[:, :, input_start_y:input_end_y, input_start_x:input_end_x] += noise_preds[row*grid_cols + col] * tile_weights
+                contributors[:, :, input_start_y:input_end_y, input_start_x:input_end_x] += tile_weights
+        # Average overlapping areas with more than 1 contributor
+        noise_pred /= contributors
+
+        model_out = noise_pred
+        # model_out = self.forward(combined, timestep, y, data_info=data_info, c_lq=c_lq, c_pre=c_pre, **kwargs)
+        eps, rest = model_out[:, :3], model_out[:, 3:]
+        cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
+        half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
+        eps = torch.cat([half_eps, half_eps], dim=0)
+        return torch.cat([eps, rest], dim=1)
     
     def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True):
         return super().load_state_dict(state_dict, strict)

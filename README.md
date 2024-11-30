@@ -48,10 +48,10 @@
 
 
 ## 🔥 News
-- **More convenient inference code&demo will be released in the coming days. Please stay tuned for updates, thanks!**
+- **2024.11.30**: Release more convenient inference code for your own images.
 - **2024.10.25**: Release segmentation&detection code, pre-trained models.
 - **2024.10.25**: Release `RealLQ250` benchmark, which contains 250 real-world LQ images. 
-- **2024.10.25**: Release training&inference (256->1024) code, pre-trained models of DreamClear. 
+- **2024.10.25**: Release training&inference code, pre-trained models of DreamClear. 
 - **2024.10.24**: This repo is created.
 
 ## 📸 Real-World IR Results
@@ -75,11 +75,12 @@
    conda activate dreamclear
    pip3 install -r requirements.txt
    ```
-3. Download Pre-trained Models (All models can be downloaded at [Huggingface](https://huggingface.co/shallowdream204/DreamClear/tree/main) for convenience.)
+3. Download Pre-trained Models (All models except for llava can be downloaded at [Huggingface](https://huggingface.co/shallowdream204/DreamClear/tree/main) for convenience.)
       #### Base Model:
       * `PixArt-α-1024`: [PixArt-XL-2-1024-MS.pth](https://huggingface.co/PixArt-alpha/PixArt-alpha/blob/main/PixArt-XL-2-1024-MS.pth)
       * `VAE`: [sd-vae-ft-ema](https://huggingface.co/PixArt-alpha/PixArt-alpha/tree/main/sd-vae-ft-ema)
       * `T5 Text Encoder`: [t5-v1_1-xxl](https://huggingface.co/PixArt-alpha/PixArt-alpha/tree/main/t5-v1_1-xxl)
+      * `LLaVA`: [llava-v1.6-vicuna-13b](https://huggingface.co/liuhaotian/llava-v1.6-vicuna-13b)
       * `SwinIR`: [general_swinir_v1.ckpt](https://huggingface.co/lxq007/DiffBIR/blob/main/general_swinir_v1.ckpt)
       #### Ours provided Model:
       * `DreamClear`: [DreamClear-1024.pth](https://huggingface.co/shallowdream204/DreamClear/blob/main/DreamClear-1024.pth)
@@ -140,17 +141,20 @@ We provide the `RealLQ250` benchmark, which can be downloaded from [Google Drive
 #### Testing DreamClear for Image Restoration
 
 
-Run the following command to restore LQ images from 256 to 1024:
+Run the following command to restore LQ images:
 ```shell
 python3 -m torch.distributed.launch --nproc_per_node 1 --master_port 1234 \
-    test_1024.py configs/DreamClear/DreamClear_Test.py \
+    test.py configs/DreamClear/DreamClear_Test.py \
     --dreamclear_ckpt /path/to/DreamClear-1024.pth \
     --swinir_ckpt /path/to/general_swinir_v1.ckpt \
     --vae_ckpt /path/to/sd-vae-ft-ema \
+    --t5_ckpt /path/to/t5-v1_1-xxl \
+    ---llava_ckpt /path/to/llava-v1.6-vicuna-13b \
     --lre --cfg_scale 4.5 --color_align wavelet \
-    --image_path /path/to/RealLQ250/lq \
-    --npz_path /path/to/RealLQ250/npz \
-    --save_dir validation
+    --image_path /path/to/input/images \
+    --save_dir validation \
+    --mixed_precision fp16 \
+    --upscale 4
 ```
 #### Evaluation on high-level benchmarks
 
