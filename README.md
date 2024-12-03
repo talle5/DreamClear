@@ -149,7 +149,7 @@ python3 -m torch.distributed.launch --nproc_per_node 1 --master_port 1234 \
     --swinir_ckpt /path/to/general_swinir_v1.ckpt \
     --vae_ckpt /path/to/sd-vae-ft-ema \
     --t5_ckpt /path/to/t5-v1_1-xxl \
-    ---llava_ckpt /path/to/llava-v1.6-vicuna-13b \
+    --llava_ckpt /path/to/llava-v1.6-vicuna-13b \
     --lre --cfg_scale 4.5 --color_align wavelet \
     --image_path /path/to/input/images \
     --save_dir validation \
