@@ -23,8 +23,8 @@ def PIL2Tensor(img, upscale=1, min_size=1024, fix_resize=None):
         w *= _upscale
         h *= _upscale
         w0, h0 = round(w), round(h)
-    w = int(np.round(w / 16.0)) * 16
-    h = int(np.round(h / 16.0)) * 16
+    w = int(np.round(w / 64.0)) * 64
+    h = int(np.round(h / 64.0)) * 64
     x = img.resize((w, h), Image.BICUBIC)
     x = np.array(x).round().clip(0, 255).astype(np.uint8)
     x = x / 255
