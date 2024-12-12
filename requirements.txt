@@ -7,7 +7,7 @@ timm==0.6.12
 accelerate
 tensorboard
 tensorboardX
-transformers
+transformers==4.44.2
 sentencepiece~=0.1.99
 ftfy
 beautifulsoup4
