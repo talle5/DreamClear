@@ -43,7 +43,7 @@ from llava.llava_caption import LLaVACaption
 warnings.filterwarnings("ignore")  # ignore warning
 
 llava_device = 'cuda:1'
-t5llm_device = 'cuda:2'
+t5llm_device = 'cpu'
 
 def set_fsdp_env():
     os.environ["ACCELERATE_USE_FSDP"] = 'true'

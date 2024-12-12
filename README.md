@@ -141,7 +141,7 @@ We provide the `RealLQ250` benchmark, which can be downloaded from [Google Drive
 #### Testing DreamClear for Image Restoration
 
 
-Run the following command to restore LQ images (the code defaults to using 3 GPUs for inference):
+Run the following command to restore LQ images (the code defaults to using 2 GPUs for inference):
 ```shell
 python3 -m torch.distributed.launch --nproc_per_node 1 --master_port 1234 \
     test.py configs/DreamClear/DreamClear_Test.py \
