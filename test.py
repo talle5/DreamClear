@@ -18,7 +18,7 @@ current_file_path = Path(__file__).resolve()
 sys.path.insert(0, str(current_file_path.parent.parent))
 
 import torch
-from accelerate import Accelerator, InitProcessGroupKwargs
+from accelerate import Accelerator, InitProcessGroupKwargs, DataLoaderConfiguration
 from accelerate.utils import DistributedType
 
 from diffusion import IDDPM, DPMS
@@ -226,17 +226,20 @@ if __name__ == '__main__':
         init_train = 'DDP'
         fsdp_plugin = None
 
-    even_batches = True
-    if config.multi_scale:
-        even_batches=False,
+   
+    
+    dataloader_config = DataLoaderConfiguration(
+        dispatch_batches=False,  # Each process fetches its own batch
+        split_batches=True       # Split fetched batches across processes
+    )
 
     accelerator = Accelerator(
+        dataloader_config=dataloader_config,
         mixed_precision=args.mixed_precision,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
         log_with=args.report_to,
         project_dir=os.path.join(config.work_dir, 'logs'),
         fsdp_plugin=fsdp_plugin,
-        even_batches=even_batches,
         kwargs_handlers=[init_handler]
     )
     logger = get_root_logger(os.path.join(config.work_dir, 'eval_dreamclear.log'))
